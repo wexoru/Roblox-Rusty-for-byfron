@@ -1,12 +1,15 @@
-
 // API
 
 use std::arch::asm;
+use std::arch::naked_asm;
 use std::os::raw::c_char;
 use std::ptr::{copy_nonoverlapping, null};
 use libc::{c_void, memcpy, size_t, uintptr_t};
 use region::protect_with_handle;
 use winapi::um::libloaderapi::GetModuleHandleA;
+use muddy::{muddy};
+use obfustr::obfuscate;
+use std::mem::transmute;
 
 
 
@@ -82,66 +85,105 @@ impl Roblox {
             old_val: 0
         }
     }
+    // for spvwn
+    unsafe extern "C" fn sexual3ty() {
+        asm!(
+        "xor eax, eax",
+        "pop edi",
+        "pop esi",
+        "pop ebx",
+        "mov esp, ebp",
+        "pop ebp",
+        "add esp, 12",
+        "popad",
+        "jmp edi",
+        options(noreturn)
+        );
+    }
     // check for stdcall constraints
     pub(crate) unsafe fn spawn(&self, r1: uintptr_t) {
+        let mut shellcode: [u8; 6] = [0x68, 0xEF, 0xBE, 0xAD, 0xDE, 0xC3];
+        let mut original = [0u8; 6];
 
-        let mut shellcode : [u8; 6] = [0x68, 0xEF, 0xBE, 0xAD, 0xDE, 0xC3]; // instructions
-        let mut original = [0 as u8; 6]; // original instructions
+        *((shellcode.as_mut_ptr().offset(1)) as *mut usize) = Self::sexual3ty as *const () as usize;
 
-        *((shellcode.as_mut_ptr().offset(1)) as *mut u32) = Roblox::epilogue as *const () as u32;
-        let _guard = protect_with_handle(self.patch_spot as *const c_void, 6, region::Protection::READ_WRITE_EXECUTE).unwrap();
+        // Используем VirtualProtect вместо region для большей совместимости
+        let mut old_protect: u32 = 0;
+        winapi::um::memoryapi::VirtualProtect(
+            self.patch_spot as *mut winapi::ctypes::c_void,
+            6,
+            winapi::um::winnt::PAGE_EXECUTE_READWRITE,
+            &mut old_protect
+        );
 
-        copy_nonoverlapping(self.patch_spot as *mut c_void,original.as_mut_ptr() as *mut c_void, 6);
-        copy_nonoverlapping(shellcode.as_mut_ptr() as *mut c_void,self.patch_spot as *mut c_void, 6);
+        copy_nonoverlapping(self.patch_spot as *mut c_void, original.as_mut_ptr() as *mut c_void, 6);
+        copy_nonoverlapping(shellcode.as_mut_ptr() as *mut c_void, self.patch_spot as *mut c_void, 6);
+
+        // Flush instruction cache для предотвращения проблем с кэшем
+        winapi::um::processthreadsapi::FlushInstructionCache(
+            winapi::um::processthreadsapi::GetCurrentProcess(),
+            self.patch_spot as *const winapi::ctypes::c_void,
+            6
+        );
 
         self.spawn_internal(r1);
-        copy_nonoverlapping(original.as_mut_ptr() as *mut c_void,self.patch_spot as *mut c_void, 6);
-    }
-    // FOR SPAWN
-    #[naked]
-    unsafe fn epilogue() {
-        asm!(
-            "xor eax, eax",
-            "pop edi",
-            "pop esi",
-            "pop ebx",
-            "mov esp, ebp",
-            "pop ebp",
-            "add esp, 12",
-            "popad",
-            "jmp edi",
-            options(noreturn)
+
+        copy_nonoverlapping(original.as_mut_ptr() as *mut c_void, self.patch_spot as *mut c_void, 6);
+
+        // Восстанавливаем защиту памяти
+        winapi::um::memoryapi::VirtualProtect(
+            self.patch_spot as *mut winapi::ctypes::c_void,
+            6,
+            old_protect,
+            &mut old_protect
         );
     }
-    // FOR SPAWN
+    // FOR SPvWN
     #[inline(never)]
     unsafe fn spawn_internal(&self, luastate: uintptr_t) {
-        asm!(
+        #[cfg(target_pointer_width = "32")]
+        {
+            asm!(
             "push edi",
-            "lea edi, 5f",
+            "lea edi, 2f",
             "pushad",
-
-            "push {luastate}", // 2 roblox states
+            "push {luastate}",
             "push {luastate}",
             "push {patch_spot}",
-
-
-
             "mov eax, {rbx_spawn_addy}",
-
             "push ebp",
             "mov ebp, esp",
-
             "sub esp, 0x1C",
             "mov [esp], ebp",
-            "jmp eax", // jump to spawn addy
-        "5:",
+            "jmp eax",
+            "2:",
             "pop edi",
+            luastate = in(reg) luastate,
+            patch_spot = in(reg) self.patch_spot,
+            rbx_spawn_addy = in(reg) self.spawn_func_addy
+            );
+        }
 
-        luastate = in(reg) luastate,
-        patch_spot = in(reg) self.patch_spot,
-        rbx_spawn_addy = in(reg) self.spawn_func_addy
-        );
+        #[cfg(target_pointer_width = "64")]
+        {
+            asm!(
+            "sub rsp, 40",
+            "mov rcx, {luastate}",
+            "mov rdx, {luastate}",
+            "mov rax, {rbx_spawn_addy}",
+            "call rax",
+            "add rsp, 40",
+            luastate = in(reg) luastate,
+            rbx_spawn_addy = in(reg) self.spawn_func_addy,
+            out("rax") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("r8") _,
+            out("r9") _,
+            out("r10") _,
+            out("r11") _,
+            );
+        }
     }
 
     pub(crate) unsafe fn other_spawn(&self, r1: uintptr_t) {
@@ -159,28 +201,65 @@ impl Roblox {
     }
 
     // maybe needs c_char (need to test) (also check fo stdcall constraints)
-    #[inline(never)] //maybe not required
-    pub(crate) fn deserialize(&self, luastate: uintptr_t,  chunk_name: *const c_char,  bytecode: *const c_char,  bytecode_len: i32 ) {
+    // В impl Roblox
+    #[inline(never)]
+    pub(crate) fn deserialize(&self, luastate: uintptr_t, chunk_name: *const c_char, bytecode: *const c_char, bytecode_len: i32) {
         unsafe {
-            asm!(
+            #[cfg(target_pointer_width = "32")]
+            {
+                asm!(
                 "push 0",
                 "push {byte_len}",
                 "push {bytecode}",
                 "push {fake_ret_addy}",
-                "lea edi, 7f", // returning (mov's after push because data are in registers)
+                "lea edi, 2f",
                 "mov ecx, {r1}",
                 "mov eax, {deserializer_func_addy}",
                 "mov edx, {chunk_name}",
                 "jmp eax",
-            "7:",
+                "2:",
                 "add esp, 12",
-            r1 = in(reg) luastate,
-            fake_ret_addy = in(reg) self.fake_ret_addy,
-            deserializer_func_addy = in(reg) self.deserializer_func_addy,
-            chunk_name = in(reg) chunk_name,
-            byte_len = in(reg) bytecode_len,
-            bytecode = in(reg) bytecode,
-            );
+                r1 = in(reg) luastate,
+                fake_ret_addy = in(reg) self.fake_ret_addy,
+                deserializer_func_addy = in(reg) self.deserializer_func_addy,
+                chunk_name = in(reg) chunk_name,
+                byte_len = in(reg) bytecode_len,
+                bytecode = in(reg) bytecode,
+                );
+            }
+
+            #[cfg(target_pointer_width = "64")]
+            {
+                // Windows x64 calling convention:
+                // RCX = первый аргумент (luastate)
+                // RDX = второй аргумент (chunk_name)
+                // R8 = третий аргумент (bytecode)
+                // R9 = четвертый аргумент (bytecode_len)
+                // Пятый параметр (0) передается через стек
+                asm!(
+                "push 0",
+                "sub rsp, 32",      // shadow space для Windows x64
+                "mov rcx, {r1}",
+                "mov rdx, {chunk_name}",
+                "mov r8, {bytecode}",
+                "mov r9, {byte_len}",
+                "mov rax, {deserializer_func_addy}",
+                "call rax",
+                "add rsp, 40",      // очистка стека (32 + 8)
+                r1 = in(reg) luastate,
+                deserializer_func_addy = in(reg) self.deserializer_func_addy,
+                chunk_name = in(reg) chunk_name,
+                byte_len = in(reg) bytecode_len,
+                bytecode = in(reg) bytecode,
+                out("rax") _,
+                out("rcx") _,
+                out("rdx") _,
+                out("r8") _,
+                out("r9") _,
+                out("r10") _,
+                out("r11") _,
+                );
+            }
         }
     }
 
@@ -200,8 +279,8 @@ impl Roblox {
         unsafe { *((func + offsets::luafunc::FUNC) as *const uintptr_t) + (func + offsets::luafunc::FUNC)}
     }
 
-    #[cfg(any(target_arch = "x86_64"))]
-    #[target_feature(enable = "ss4")] // Intel, AMD CPUs
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "sse4.2")] // Intel, AMD CPUs
     unsafe fn push_number(r1: uintptr_t, num: f64) {
         let a = std::arch::x86_64::_mm_load_sd(&num);
 
