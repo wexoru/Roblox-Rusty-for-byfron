@@ -1,5 +1,5 @@
 [package]
-name = "Rust-based_R-Exploit"
+name = "cataract"
 version = "0.1.0"
 edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -16,7 +16,15 @@ strum = { version = "0.24", features = ["derive"] }
 strum_macros = "0.24"
 lazy_static = "1.4.0"
 terminal-spinners = "0.3.2"
+obfustr = "0.1.2"
+muddy = "0.3.2"
+
+[profile.release]
+strip = true        # удаляет символы
+panic = "abort"     # уменьшает размер
+lto = true          # встраивает всё, усложняя анализ
+codegen-units = 1
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
-    "std", "libloaderapi", "winnt", "minwindef", "memoryapi", "consoleapi", "wincon", "processenv", "winbase", "processthreadsapi"] }
+    "std", "libloaderapi", "winnt", "minwindef", "memoryapi", "consoleapi", "wincon", "processenv", "winbase", "processthreadsapi", "debugapi"] }
